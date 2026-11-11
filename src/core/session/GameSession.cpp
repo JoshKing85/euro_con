@@ -1,0 +1,683 @@
+#include "european_conquest/core/session/GameSession.h"
+#include "european_conquest/core/session/GameInitializer.h"
+
+// MANAGERS
+#include "european_conquest/core/managers/AttackManager.h"
+#include "european_conquest/core/managers/GameStateManager.h"
+#include "european_conquest/core/managers/TroopManager.h"
+
+// ENTITIES AND WORLD
+#include "european_conquest/entities/Player.h"
+
+#include "european_conquest/world/Deck.h"
+#include "european_conquest/world/Map.h"
+
+// VALIDATION
+#include "european_conquest/core/validation/ValidateTerritorySelection.h"
+#include "european_conquest/core/validation/ValidateAttackInput.h"
+#include "european_conquest/core/validation/ValidateAttackSelection.h"
+#include "european_conquest/core/validation/ValidateDiceInput.h"
+#include "european_conquest/core/validation/ValidateFortifyInput.h"
+#include "european_conquest/core/validation/ValidateTroopCountInput.h"
+#include "european_conquest/core/validation/ValidateSetInput.h"
+
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <vector>
+#include <iostream>
+
+namespace european_conquest {
+
+    // CONSTRUCTOR
+
+    GameSession::GameSession()
+        : gameStateManager(map, players)
+    {
+    }
+
+
+    // CREATE GAME
+
+    void GameSession::createGame(
+        std::string& filename,
+        int playerNumbers,
+        int aiNumbers
+    )
+    {
+        // create base game state
+
+        GameInitializer gameInitializer;
+
+        std::tie(map, players, deck) =
+            gameInitializer.initializeGame(
+                filename,
+                playerNumbers,
+                aiNumbers
+            );
+
+        // deal initial territories
+
+        gameInitializer.dealDeck(
+            deck,
+            players,
+            map,
+            gameStateManager
+        );
+
+        // calculate remaining starting troops
+
+        remainingTroops.clear();
+
+        for (auto& player : players)
+        {
+            int troops =
+                static_cast<int>(
+                    60 / players.size()
+                    )
+                -
+                static_cast<int>(
+                    player.getTerritoriesHeld().size()
+                    );
+
+            if (players.size() == 6)
+            {
+                troops++;
+            }
+
+            remainingTroops.push_back(
+                troops
+            );
+        }
+
+        // Initial troop placement is handled through GameState and UI events.
+    }
+
+
+    // END TURN
+
+    void GameSession::endTurn(GameState& gameState)
+    {
+        // TODO: Add turn logging when LogManager integration is implemented.
+        //LogManager logManager(/* current player */);
+        // log attackManager + troopManager orders
+
+        // Discard completed turn orders before advancing.
+        attackManager.clearOrders();
+        troopManager.clearOrders();
+
+        // Advance to the next active player, skipping eliminated players.
+        gameState.clearTurn();
+        int count = 0;
+        int pointer = gameState.getPlayerTurnID() + 1;
+
+        while (count < players.size())
+        {
+            if (pointer >= players.size())
+            {
+                pointer = 0;
+            }
+
+            if (players[pointer].getIsActive())
+            {
+                gameState.setPlayerTurnID(pointer);
+                gameState.setPhase(PhaseType::Reinforce);
+                break;
+            }
+
+            pointer++;
+            count++;
+        }
+    }
+    // VALIDATION
+
+    bool GameSession::validateSelection(
+        TerritoryID selectedTerritory,
+        std::vector<TerritoryID> territories
+    )
+    {
+        return isValidTerritorySelection(
+            selectedTerritory,
+            territories
+        );
+    }
+
+    bool GameSession::validateAttackSelection(
+        int playerID,
+        TerritoryID& territorySelection
+    )
+    {
+        return isValidAttackSelection(
+            playerID,
+            territorySelection,
+            map
+        );
+    }
+
+    bool GameSession::validateAttackInput(
+        TerritoryID toSelection,
+        TerritoryID fromSelection)
+    {
+        return isValidAttackInput(
+            toSelection,
+            map.getTerritory(
+                fromSelection)
+            .getAdjacentTerritories(),
+            map.getTerritory(
+                fromSelection)
+            .getTroopCount(),
+            map.getTerritory(
+                fromSelection)
+            .getOwnerID(),
+            map.getTerritory(
+                toSelection)
+            .getOwnerID());
+    }
+
+
+    bool GameSession::validateTroopCountInput(
+        int troopCount,
+        GameState& gameState)
+    {
+        return isTroopCountValid(
+            troopCount,
+            gameState.getReinforcePool());
+    }
+
+
+    bool GameSession::validateDiceInput(
+        int diceCount,
+        GameState& gameState
+    )
+    {
+        return isValidDiceInput(
+            diceCount,
+            map.getTerritory(
+                gameState.getFromTerritorySelection()
+            ).getTroopCount()
+        );
+    }
+
+
+    bool GameSession::validateFortifySelection(
+        TerritoryID fromSelection,
+        TerritoryID toSelection,
+        GameState& gameState
+    )
+    {
+        return isFortifyValid(
+            map,
+            fromSelection,
+            toSelection,
+            gameState.getPlayerTurnID()
+        );
+    }
+
+
+    std::optional<SetType> GameSession::validateCashSet(
+        const std::vector<Card>& cards)
+    {
+        return validateSet(cards);
+    }
+
+
+    // REINFORCE ORDER
+
+    void GameSession::createReinforceOrder(
+        TerritoryID territoryID,
+        int troopCount,
+        GameState& gameState
+    )
+    {
+        troopManager.createReinforceOrder(
+            gameState.getPlayerTurnID(),
+            territoryID,
+            troopCount
+        );
+
+        gameState.addReinforceOrder(
+            troopManager.getLastReinforceOrder()
+        );
+    }
+
+
+    void GameSession::executeReinforceOrder(
+        GameState& gameState
+    )
+    {
+        troopManager.executeReinforceOrder(
+            gameStateManager
+        );
+    }
+
+
+    void GameSession::undoReinforceOrder(
+        GameState& gameState
+    )
+    {
+        gameState.removeLastReinforceOrder();
+
+        troopManager.undoReinforceOrder();
+    }
+
+
+    void GameSession::updateReinforceOrder(
+        bool add,
+        GameState& gameState
+    )
+    {
+        troopManager.updateReinforceOrder(
+            add
+        );
+    }
+
+
+    // CASH SET ORDER
+
+    void GameSession::createCashSetOrder(
+        SetType setType,
+        const std::vector<Card>& cards,
+        GameState& gameState
+    )
+    {
+        troopManager.createCashSetOrder(
+            gameState.getPlayerTurnID(),
+            setType,
+            cards
+        );
+    }
+
+
+    void GameSession::executeCashSetOrder(
+        GameState& gameState
+    )
+    {
+        int reinforcementBonus =
+            troopManager.executeCashSetOrder(
+                getPlayer(
+                    gameState.getPlayerTurnID()
+                ),
+                gameStateManager
+            );
+
+        gameState.setInitialReinforceCount(
+            gameState.getReinforcePool()
+            +
+            reinforcementBonus
+        );
+    }
+
+
+    void GameSession::undoCashSetOrder(
+        GameState& gameState
+    )
+    {
+        troopManager.undoCashSetOrder();
+    }
+
+
+    // ATTACK ORDER
+
+    void GameSession::createAttackOrder(
+        GameState& gameState)
+    {
+        TerritoryID fromTerritory =
+            gameState.getFromTerritorySelection();
+
+        TerritoryID toTerritory =
+            gameState.getToTerritorySelection();
+
+        int attackingTroops =
+            map.getTerritory(
+                fromTerritory
+            ).getTroopCount() - 1;
+
+        attackManager.createAttack(
+            gameState.getPlayerTurnID(),
+            fromTerritory,
+            toTerritory,
+            attackingTroops,
+            map.getTerritory(
+                toTerritory
+            ).getTroopCount()
+        );
+
+        gameState.addAttackOrder(
+            attackManager.getLastAttackOrder()
+        );
+    }
+
+
+    void GameSession::executeAttackOrder(
+        GameState& gameState)
+    {
+        int defendingPlayerID =
+            map.getTerritory(
+                gameState.getToTerritorySelection())
+            .getOwnerID();
+
+        attackManager.executeAttackOrder(
+            gameStateManager);
+
+        if (attackManager
+            .getLastAttackOrder()
+            .getResult()
+            .attackOutcome != AttackOutcome::Captured)
+        {
+            return;
+        }
+
+        Player& defendingPlayer =
+            getPlayer(
+                defendingPlayerID);
+
+        if (!defendingPlayer
+            .getTerritoriesHeld()
+            .empty())
+        {
+            return;
+        }
+
+        std::vector<Card> defendingCards =
+            defendingPlayer.getPlayerSet();
+
+        updatePlayerSet(
+            gameState,
+            defendingCards);
+
+        defendingPlayer.setIsActive(
+            false);
+    }
+    
+
+    void GameSession::undoAttackOrder(
+        GameState& gameState
+    )
+    {
+        gameState.removeLastAttackOrder();
+
+        attackManager.undoAttack();
+    }
+
+
+    // ROLL DICE ORDER
+
+    void GameSession::createRollDiceOrder(
+        int diceCount,
+        GameState& gameState
+    )
+    {
+        attackManager.createRollDiceOrder(
+            diceCount
+        );
+
+        gameState.addRollDiceOrder(
+            attackManager.getLastRollDiceOrder()
+        );
+    }
+
+    void GameSession::undoRollDiceOrder(
+        GameState& gameState
+    )
+    {
+        gameState.removeLastRollDiceOrder();
+
+        attackManager.undoRollDiceOrder();
+    }
+
+    void GameSession::updateRollDiceOrder(int diceCount)
+    {
+        attackManager.updateRollDiceOrder(diceCount);
+    }
+
+
+    // MOVE TROOPS ORDER
+
+    void GameSession::createMoveTroopsOrder(
+        TerritoryID fromTerritory,
+        TerritoryID toTerritory,
+        int troopCount,
+        GameState& gameState
+    )
+    {
+        attackManager.createMoveTroopsOrder(
+            gameState.getPlayerTurnID(),
+            fromTerritory,
+            toTerritory,
+            troopCount
+        );
+
+        gameState.addMoveTroopsOrder(
+            attackManager.getLastMoveTroopsOrder()
+        );
+    }
+
+    void GameSession::updateMoveTroopsOrder(bool add)
+    {
+        attackManager.updateMoveTroopsOrder(add);
+    }
+
+
+    void GameSession::executeMoveTroopsOrder(
+        GameState& gameState
+    )
+    {
+        attackManager.executeMoveTroopsOrder(
+            gameStateManager
+        );
+    }
+
+
+    void GameSession::undoMoveTroopsOrder(
+        GameState& gameState
+    )
+    {
+        gameState.removeLastMoveTroopsOrder();
+
+        attackManager.undoMoveTroopsOrder();
+    }
+
+
+    // FORTIFY ORDER
+
+    void GameSession::createFortifyOrder(
+        TerritoryID fromTerritory,
+        TerritoryID toTerritory,
+        int troopCount,
+        GameState& gameState
+    )
+    {
+        troopManager.createFortifyOrder(
+            gameState.getPlayerTurnID(),
+            fromTerritory,
+            toTerritory,
+            troopCount
+        );
+
+        gameState.addFortifyOrder(
+            troopManager.getLastFortifyOrder()
+        );
+    }
+
+
+    void GameSession::executeFortifyOrder(
+        GameState& gameState
+    )
+    {
+        troopManager.executeFortifyOrder(
+            gameStateManager
+        );
+    }
+
+
+    void GameSession::undoFortifyOrder(
+        GameState& gameState
+    )
+    {
+        gameState.removeLastFortifyOrder();
+
+        troopManager.undoFortifyOrder();
+    }
+
+    void GameSession::updateFortifyOrder(
+        bool add
+    )
+    {
+        troopManager.updateFortifyOrder(add);
+    }
+
+
+    // GETTERS
+
+    Map& GameSession::getMap()
+    {
+        return map;
+    }
+
+
+    std::vector<Player>& GameSession::getPlayers()
+    {
+        return players;
+    }
+
+
+    std::vector<int> GameSession::getPlayerIDs() const
+    {
+        std::vector<int> playerIDs;
+
+        for (const auto& player : players)
+        {
+            playerIDs.push_back(
+                player.getPlayerID()
+            );
+        }
+
+        return playerIDs;
+    }
+
+
+    std::vector<int> GameSession::getTroopCounts() const
+    {
+        std::vector<int> troopCounts;
+
+        for (const auto& player : players)
+        {
+            troopCounts.push_back(
+                player.getTroopCount()
+            );
+        }
+
+        return troopCounts;
+    }
+
+
+    std::vector<int> GameSession::getRemainingTroops() const
+    {
+        return remainingTroops;
+    }
+
+
+    Player& GameSession::getPlayer(
+        int playerID
+    )
+    {
+        for (auto& player : players)
+        {
+            if (player.getPlayerID() ==
+                playerID)
+            {
+                return player;
+            }
+        }
+
+        throw std::runtime_error(
+            "Player ID not found"
+        );
+    }
+
+
+    // SETTERS
+
+    void GameSession::addTroop(
+        TerritoryID territoryID,
+        int playerID)
+    {
+        gameStateManager.updateTerritoryTroopCount(
+            territoryID,
+            1);
+
+        gameStateManager.updatePlayerTroopCount(
+            playerID,
+            1);
+    }
+
+
+    void GameSession::setReinforcePool(
+        GameState& gameState
+    )
+    {
+        int playerID =
+            gameState.getPlayerTurnID();
+
+        int reinforcementPool =
+            troopManager.calculateReinforcements(
+                players[playerID]
+            );
+
+        gameState.setInitialReinforceCount(
+            reinforcementPool
+        );
+    }
+
+    void GameSession::updatePlayerSet(
+        GameState& gameState,
+        std::vector<Card>& cards)
+    {
+        Player& attackingPlayer =
+            getPlayer(
+                gameState.getPlayerTurnID());
+
+        cards.insert(
+            cards.end(),
+            attackingPlayer.getPlayerSet().begin(),
+            attackingPlayer.getPlayerSet().end());
+
+        gameStateManager.updatePlayerSet(
+            gameState.getPlayerTurnID(),
+            cards);
+    }
+
+    std::vector<Card> GameSession::checkCardState(
+        int defendingPlayerID)
+    {
+        Player& defendingPlayer =
+            getPlayer(
+                defendingPlayerID);
+
+        if (defendingPlayer
+            .getTerritoriesHeld()
+            .empty())
+        {
+            return defendingPlayer
+                .getPlayerSet();
+        }
+
+        return {};
+    }
+
+    const std::vector<Card>& GameSession::getPlayerCards(
+        int playerID)
+    {
+        for (auto& player : players)
+        {
+            if (player.getPlayerID() == playerID)
+            {
+                return player.getPlayerSet();
+            }
+        }
+
+        throw std::runtime_error(
+            "Player ID not found");
+    }
+
+} // namespace european_conquest

@@ -1,0 +1,534 @@
+#include "european_conquest/graphics/ui/ReinforceUI.h"
+#include <iostream>
+
+namespace european_conquest {
+
+    ReinforceUI::ReinforceUI(
+        const sf::Font& font,
+        const std::unordered_map<TerritoryID, TerritoryGraphics>&
+        territoryGraphicsMap,
+        GameState& gameState,
+        GameSession& gameSession)
+        : phaseTitle(font)
+    {
+        // PHASE TITLE
+
+        phaseTitle.setString(
+            "REINFORCEMENT PHASE");
+
+        phaseTitle.setCharacterSize(
+            28);
+
+        phaseTitle.setFillColor(
+            sf::Color::Black);
+
+        phaseTitle.setStyle(
+            sf::Text::Bold);
+
+        sf::FloatRect titleBounds =
+            phaseTitle.getLocalBounds();
+
+        phaseTitle.setOrigin({
+            titleBounds.position.x +
+                titleBounds.size.x / 2.0f,
+            titleBounds.position.y
+            });
+
+        phaseTitle.setPosition({
+            960.0f,
+            20.0f
+            });
+
+        cardContainer.emplace(
+            font,
+            territoryGraphicsMap,
+            gameState.getPlayerCards());
+
+        if (gameState.getPlayerCards().size() >= 5)
+        {
+            cardContainer->openContainer();
+        }
+
+        reinforceControls.emplace(
+            font);
+
+        reinforceControls->setRemainingTroops(
+            gameState.getReinforcePool());
+
+        playerIndicator.emplace(
+            font);
+
+        playerIndicator->setPosition(
+            gameState.getPlayerTurnID());
+    }
+
+    void ReinforceUI::setPlayerState(
+        GameState& gameState,
+        GameSession& gameSession,
+        const std::unordered_map<TerritoryID, TerritoryGraphics>&
+        territoryGraphicsMap)
+    {
+
+        gameSession.setReinforcePool(
+            gameState);
+
+        Player& player =
+            gameSession.getPlayer(
+                gameState.getPlayerTurnID());
+
+        gameState.setPlayerCards(
+            player.getPlayerSet());
+
+        playerIndicator->setPosition(
+            gameState.getPlayerTurnID());
+
+        cardContainer->updateCards(
+            territoryGraphicsMap,
+            gameState.getPlayerCards());
+
+        reinforceControls->setRemainingTroops(
+            gameState.getReinforcePool());
+
+        gameState.setTurnStarted(true);
+    }
+
+    void ReinforceUI::handleReinforceEvent(
+        const sf::Event& event,
+        sf::RenderWindow& window,
+        GameSession& gameSession,
+        GameState& gameState,
+        std::unordered_map<TerritoryID, TerritoryGraphics>&
+        territoryGraphicsMap)
+    {
+        if (const auto* mousePressed =
+            event.getIf<sf::Event::MouseButtonPressed>())
+        {
+            sf::Vector2f mousePosition = {
+                static_cast<float>(
+                    mousePressed->position.x),
+                static_cast<float>(
+                    mousePressed->position.y)
+            };
+
+            if (cardContainer->getTabBounds().contains(
+                mousePosition))
+            {
+                if (cardContainer->isOpen())
+                {
+                    cardContainer->clearSelectedCards();
+
+                    cardContainer->setCashSetAvailable(
+                        false);
+
+                    cardContainer->closeContainer();
+                }
+                else
+                {
+                    cardContainer->openContainer();
+                }
+
+                return;
+            }
+
+            if (cardContainer->isOpen())
+            {
+                if (cardContainer->getCashSetAvailable() &&
+                    cardContainer->getCashSetBounds().contains(
+                        mousePosition))
+                {
+                    cashSet(
+                        gameSession,
+                        gameState,
+                        territoryGraphicsMap);
+
+                    return;
+                }
+
+                cardContainer->selectCard(
+                    mousePosition);
+
+                validateCardSelection(
+                    gameSession,
+                    gameState);
+            }
+        }
+
+        handleTroops(
+            event,
+            window,
+            gameSession,
+            gameState,
+            territoryGraphicsMap);
+    }
+
+    void ReinforceUI::handleTroops(
+        const sf::Event& event,
+        sf::RenderWindow& window,
+        GameSession& gameSession,
+        GameState& gameState,
+        std::unordered_map<TerritoryID, TerritoryGraphics>& territoryGraphicsMap)
+    {
+        TerritoryID territorySelection =
+            gameState.getToTerritorySelection();
+
+        if (territorySelection == TerritoryID::None)
+        {
+            troopPlacement(
+                event,
+                window,
+                gameSession,
+                gameState,
+                territoryGraphicsMap);
+
+            return;
+        }
+
+        if (const auto* mousePressed =
+            event.getIf<sf::Event::MouseButtonPressed>())
+        {
+            sf::Vector2f mousePosition = {
+                static_cast<float>(
+                    mousePressed->position.x),
+                static_cast<float>(
+                    mousePressed->position.y)
+            };
+
+            if (reinforceControls
+                ->getAddTroopsBounds()
+                .contains(mousePosition))
+            {
+                addTroop(
+                    gameSession,
+                    gameState);
+            }
+            else if (reinforceControls
+                ->getRemoveTroopsBounds()
+                .contains(mousePosition))
+            {
+                removeTroop(
+                    gameSession,
+                    gameState);
+            }
+            else if (reinforceControls
+                ->getBackBounds()
+                .contains(mousePosition))
+            {
+                back(
+                    gameSession,
+                    gameState);
+            }
+            else if (reinforceControls
+                ->getConfirmBounds()
+                .contains(mousePosition))
+            {
+                confirm(
+                    gameSession,
+                    gameState);
+            }
+        }
+    }
+
+    void ReinforceUI::troopPlacement(
+        const sf::Event& event,
+        sf::RenderWindow& window,
+        GameSession& gameSession,
+        GameState& gameState,
+        std::unordered_map<TerritoryID, TerritoryGraphics>& territoryGraphicsMap)
+    {
+        if (const auto* mousePressed =
+            event.getIf<sf::Event::MouseButtonPressed>())
+        {
+            sf::Vector2f mousePosition = {
+                static_cast<float>(
+                    mousePressed->position.x),
+                static_cast<float>(
+                    mousePressed->position.y)
+            };
+
+            for (auto& [territoryID, territoryGraphics] :
+                territoryGraphicsMap)
+            {
+                if (territoryGraphics.contains(
+                    mousePosition))
+                {
+                    const std::vector<TerritoryID>& territories =
+                        gameSession
+                        .getPlayer(
+                            gameState.getPlayerTurnID())
+                        .getTerritoriesHeld();
+
+                    if (gameSession.validateSelection(
+                        territoryID,
+                        territories))
+                    {
+                        gameState.setToSelection(
+                            territoryID);
+
+                        gameSession.createReinforceOrder(
+                            territoryID,
+                            1,
+                            gameState);
+
+                        gameState.updateReinforcePool(
+                            1);
+
+                        reinforceControls->setRemainingTroops(
+                            gameState.getReinforcePool());
+
+                        // POSITION CONTROLS BESIDE SELECTED TERRITORY
+
+                        sf::FloatRect bounds =
+                            territoryGraphics.getBounds();
+
+                        float controlX =
+                            bounds.position.x +
+                            bounds.size.x +
+                            10.0f;
+
+                        // Move controls to left if they exceed screen
+
+                        if (controlX + 220.0f >
+                            static_cast<float>(
+                                window.getSize().x))
+                        {
+                            controlX =
+                                bounds.position.x -
+                                220.0f -
+                                10.0f;
+                        }
+
+                        reinforceControls
+                            ->setTroopControlsPosition({
+                                controlX,
+                                bounds.position.y
+                                });
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    void ReinforceUI::addTroop(
+        GameSession& gameSession,
+        GameState& gameState)
+    {
+        if (gameSession.validateTroopCountInput(
+            1,
+            gameState))
+        {
+            gameSession.updateReinforceOrder(
+                true,
+                gameState);
+
+            gameState.updateReinforcePool(
+                1);
+
+            reinforceControls->setRemainingTroops(
+                gameState.getReinforcePool());
+        }
+    }
+
+    void ReinforceUI::removeTroop(
+        GameSession& gameSession,
+        GameState& gameState)
+    {
+        int troopCount =
+            gameState
+            .getLastReinforceOrder()
+            .getReinforceTroopCount();
+
+        if (troopCount == 1)
+        {
+            gameSession.undoReinforceOrder(
+                gameState);
+
+            TerritoryID noSelection =
+                TerritoryID::None;
+
+            gameState.setToSelection(
+                noSelection);
+
+            gameState.updateReinforcePool(
+                -1);
+
+            reinforceControls->setRemainingTroops(
+                gameState.getReinforcePool());
+
+            return;
+        }
+
+        gameSession.updateReinforceOrder(
+            false,
+            gameState);
+
+        gameState.updateReinforcePool(
+            -1);
+
+        reinforceControls->setRemainingTroops(
+            gameState.getReinforcePool());
+    }
+
+    void ReinforceUI::back(
+        GameSession& gameSession,
+        GameState& gameState)
+    {
+        int troopCount =
+            gameState
+            .getLastReinforceOrder()
+            .getReinforceTroopCount();
+
+        gameState.updateReinforcePool(
+            -troopCount);
+
+        gameSession.undoReinforceOrder(
+            gameState);
+
+        TerritoryID noSelection =
+            TerritoryID::None;
+
+        gameState.setToSelection(
+            noSelection);
+
+        reinforceControls->setRemainingTroops(
+            gameState.getReinforcePool());
+    }
+
+    // Commit the pending reinforcement order and update the available troop pool.
+    void ReinforceUI::confirm(
+        GameSession& gameSession,
+        GameState& gameState)
+    {
+        int troopCount =
+            gameState
+            .getLastReinforceOrder()
+            .getReinforceTroopCount();
+
+        gameSession.executeReinforceOrder(
+            gameState);
+
+        TerritoryID noSelection =
+            TerritoryID::None;
+
+        gameState.setToSelection(
+            noSelection);
+
+        if (!gameState.getReinforcePool())
+        {
+            gameState.setPhase(
+                PhaseType::Attack);
+        }
+    }
+
+    // CARD HANDLING
+    // Check the selected card combination before allowing a set to be cashed.
+    void ReinforceUI::validateCardSelection(
+        GameSession & gameSession,
+        GameState & gameState)
+    {
+        const std::vector<int>& selectedIndices =
+            cardContainer->getSelectedCards();
+
+        const std::vector<Card>& playerCards =
+            gameState.getPlayerCards();
+
+        std::vector<Card> selectedCards;
+
+        for (int index : selectedIndices)
+        {
+            selectedCards.push_back(
+                playerCards[index]);
+        }
+
+        std::optional<SetType> setType =
+            gameSession.validateCashSet(
+                selectedCards);
+
+        cardContainer->setCashSetAvailable(
+            setType.has_value());
+    }
+
+        void ReinforceUI::cashSet(
+            GameSession& gameSession,
+            GameState& gameState,
+            std::unordered_map<TerritoryID, TerritoryGraphics>&
+            territoryGraphicsMap)
+    {
+        const std::vector<int>& selectedIndices =
+            cardContainer->getSelectedCards();
+
+        const std::vector<Card>& playerCards =
+            gameState.getPlayerCards();
+
+        std::vector<Card> selectedCards;
+
+        for (int index : selectedIndices)
+        {
+            selectedCards.push_back(
+                playerCards[index]);
+        }
+
+        std::optional<SetType> setType =
+            gameSession.validateCashSet(
+                selectedCards);
+
+        if (!setType.has_value())
+        {
+            return;
+        }
+
+        gameSession.createCashSetOrder(
+            setType.value(),
+            selectedCards,
+            gameState);
+
+        gameSession.executeCashSetOrder(
+            gameState);
+
+        Player& player =
+            gameSession.getPlayer(
+                gameState.getPlayerTurnID());
+
+        gameState.setPlayerCards(
+            player.getPlayerSet());
+
+        cardContainer->updateCards(
+            territoryGraphicsMap,
+            gameState.getPlayerCards());
+
+        cardContainer->setCashSetAvailable(
+            false);
+
+        reinforceControls->setRemainingTroops(
+            gameState.getReinforcePool());
+    }
+
+        void ReinforceUI::draw(
+            sf::RenderWindow& window,
+            GameState& gameState)
+        {
+            phaseTitle.setPosition({
+                static_cast<float>(
+                    window.getSize().x) / 2.0f,
+                20.0f
+                });
+
+            window.draw(
+                phaseTitle);
+
+            playerIndicator->draw(
+                window);
+
+            if (gameState.getToTerritorySelection() !=
+                TerritoryID::None)
+            {
+                reinforceControls->draw(
+                    window);
+            }
+
+            cardContainer->draw(
+                window);
+        }
+
+} // namespace european_conquest

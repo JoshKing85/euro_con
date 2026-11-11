@@ -1,0 +1,359 @@
+#include "european_conquest/core/managers/AttackManager.h"
+#include "european_conquest/core/managers/GameStateManager.h"
+
+#include "european_conquest/core/orders/AttackOrder.h"
+#include "european_conquest/core/orders/MoveTroopsOrder.h"
+#include "european_conquest/core/orders/RollDiceOrder.h"
+
+#include <algorithm>
+#include <vector>
+
+namespace european_conquest {
+
+    // CONSTRUCTOR
+
+    AttackManager::AttackManager()
+    {
+    }
+
+    // ATTACK ORDER
+
+    void AttackManager::createAttack(
+        int playerID,
+        TerritoryID fromTerritory,
+        TerritoryID toTerritory,
+        int attackingTroopCount,
+        int defendingTroopCount
+    )
+    {
+        attackOrders.emplace_back(
+            playerID,
+            fromTerritory,
+            toTerritory,
+            attackingTroopCount,
+            defendingTroopCount
+        );
+    }
+
+    void AttackManager::undoAttack()
+    {
+        if (!attackOrders.empty())
+        {
+            attackOrders.pop_back();
+        }
+    }
+
+    // DICE-ROLL ORDER
+
+    void AttackManager::createRollDiceOrder(
+        int attackDiceCount
+    )
+    {
+        AttackOrder& currentAttack =
+            attackOrders.back();
+
+        const int defendDiceCount =
+            (currentAttack.getDefendingTroopCount() >= 2)
+            ? 2
+            : 1;
+
+        rollDiceOrders.emplace_back(
+            currentAttack.getPlayerID(),
+            attackDiceCount,
+            defendDiceCount
+        );
+    }
+
+    void AttackManager::createRollDiceOrder(
+        const std::vector<int>& attackingDice,
+        const std::vector<int>& defendingDice
+    )
+    {
+        AttackOrder& currentAttack =
+            attackOrders.back();
+
+        rollDiceOrders.emplace_back(
+            currentAttack.getPlayerID(),
+            attackingDice,
+            defendingDice
+        );
+    }
+
+    void AttackManager::updateRollDiceOrder(
+        int diceCount
+    )
+    {
+        RollDiceOrder& currentRoll =
+            rollDiceOrders.back();
+
+        currentRoll.updateAttackerDice(
+            diceCount
+        );
+    }
+
+    void AttackManager::undoRollDiceOrder()
+    {
+        if (!rollDiceOrders.empty())
+        {
+            rollDiceOrders.pop_back();
+        }
+    }
+
+    // ATTACK EXECUTION
+
+    void AttackManager::executeAttackOrder(
+        GameStateManager& gameStateManager
+    )
+    {
+        AttackOrder& currentAttack =
+            attackOrders.back();
+
+        RollDiceOrder& currentRoll =
+            rollDiceOrders.back();
+
+        currentRoll.execute();
+
+        resolveAttack(
+            currentAttack,
+            currentRoll,
+            gameStateManager
+        );
+    }
+
+    void AttackManager::resolveAttack(
+        AttackOrder& currentAttack,
+        const RollDiceOrder& currentRoll,
+        GameStateManager& gameStateManager
+    )
+    {
+        const int playerID =
+            currentAttack.getPlayerID();
+
+        const int attackingTroopCount =
+            currentAttack.getAttackingTroopCount();
+
+        const int defendingTroopCount =
+            currentAttack.getDefendingTroopCount();
+
+        const std::vector<int>& attackingDice =
+            currentRoll.getAttackingDice();
+
+        const std::vector<int>& defendingDice =
+            currentRoll.getDefendingDice();
+
+        int attackLosses = 0;
+        int defendLosses = 0;
+
+        // compare dice
+
+        const std::size_t diceComparisons =
+            std::min(
+                attackingDice.size(),
+                defendingDice.size()
+            );
+
+        for (std::size_t i = 0;
+            i < diceComparisons;
+            ++i)
+        {
+            if (attackingDice[i] > defendingDice[i])
+            {
+                ++defendLosses;
+            }
+            else
+            {
+                ++attackLosses;
+            }
+        }
+
+        // build attack result
+
+        AttackResult result;
+
+        result.attackerLosses =
+            attackLosses;
+
+        result.defenderLosses =
+            defendLosses;
+
+        result.attackingTroopCount =
+            attackingTroopCount - attackLosses;
+
+        result.defendingTroopCount =
+            defendingTroopCount - defendLosses;
+
+        // determine outcome
+
+        if (result.defendingTroopCount == 0)
+        {
+            result.attackOutcome =
+                AttackOutcome::Captured;
+        }
+        else if (
+            result.attackerLosses >
+            result.defenderLosses
+            )
+        {
+            result.attackOutcome =
+                AttackOutcome::DefenderGain;
+        }
+        else if (
+            result.attackerLosses <
+            result.defenderLosses
+            )
+        {
+            result.attackOutcome =
+                AttackOutcome::AttackerGain;
+        }
+        else
+        {
+            result.attackOutcome =
+                AttackOutcome::Draw;
+        }
+
+        // complete attack
+
+        currentAttack.setResult(result);
+
+        // apply troop losses
+
+        if (defendLosses > 0)
+        {
+            int defenderID =
+                gameStateManager.getTerritoryOwnerID(
+                    currentAttack.getAttackingTo()
+                );
+
+            gameStateManager.updateTerritoryTroopCount(
+                currentAttack.getAttackingTo(),
+                -defendLosses
+            );
+
+            gameStateManager.updatePlayerTroopCount(
+                defenderID,
+                -defendLosses
+            );
+        }
+
+        if (attackLosses > 0)
+        {
+            gameStateManager.updateTerritoryTroopCount(
+                currentAttack.getAttackingFrom(),
+                -attackLosses
+            );
+
+            gameStateManager.updatePlayerTroopCount(
+                playerID,
+                -attackLosses
+            );
+        }
+
+        // capture territory
+
+        if (
+            result.attackOutcome ==
+            AttackOutcome::Captured
+            )
+        {
+            gameStateManager.updateTerritoryOwner(
+                currentAttack.getAttackingTo(),
+                playerID
+            );
+        }
+    }
+
+    // POST-CAPTURE TROOP MOVEMENT
+
+    void AttackManager::createMoveTroopsOrder(
+        int playerID,
+        TerritoryID fromTerritory,
+        TerritoryID toTerritory,
+        int moveTroopCount
+    )
+    {
+        moveTroopsOrders.emplace_back(
+            playerID,
+            fromTerritory,
+            toTerritory,
+            moveTroopCount
+        );
+    }
+    void AttackManager::updateMoveTroopsOrder(bool add)
+    {
+        MoveTroopsOrder& currentMove =
+            moveTroopsOrders.back();
+
+        currentMove.updateMoveTroopsOrder(add);
+    }
+
+    void AttackManager::undoMoveTroopsOrder()
+    {
+        if (!moveTroopsOrders.empty())
+        {
+            moveTroopsOrders.pop_back();
+        }
+    }
+
+    void AttackManager::executeMoveTroopsOrder(
+        GameStateManager& gameStateManager)
+    {
+        MoveTroopsOrder& currentMove =
+            moveTroopsOrders.back();
+
+        gameStateManager.updateTerritoryTroopCount(
+            currentMove.getFromTerritory(),
+            -currentMove.getTroopsMoved());
+
+        gameStateManager.updateTerritoryTroopCount(
+            currentMove.getToTerritory(),
+            currentMove.getTroopsMoved());
+
+        currentMove.complete();
+    }
+
+    void AttackManager::clearOrders()
+    {
+        attackOrders.clear();
+        rollDiceOrders.clear();
+        moveTroopsOrders.clear();
+    }
+
+    // GETTERS
+
+    const AttackOrder&
+        AttackManager::getLastAttackOrder() const
+    {
+        return attackOrders.back();
+    }
+
+    const RollDiceOrder&
+        AttackManager::getLastRollDiceOrder() const
+    {
+        return rollDiceOrders.back();
+    }
+
+    const MoveTroopsOrder&
+        AttackManager::getLastMoveTroopsOrder() const
+    {
+        return moveTroopsOrders.back();
+    }
+
+    const std::vector<AttackOrder>&
+        AttackManager::getAttackOrders() const
+    {
+        return attackOrders;
+    }
+
+    const std::vector<RollDiceOrder>&
+        AttackManager::getRollDiceOrders() const
+    {
+        return rollDiceOrders;
+    }
+
+    const std::vector<MoveTroopsOrder>&
+        AttackManager::getMoveTroopsOrders() const
+    {
+        return moveTroopsOrders;
+    }
+
+} // namespace european_conquest
